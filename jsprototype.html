@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Gaze Research Demo - Thermal Heatmap</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <style>
+        body { margin: 0; background: #111; color: white; font-family: sans-serif; overflow: hidden; }
+        canvas { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        #video-hidden { display: none; }
+        #info { position: absolute; top: 10px; width: 100%; text-align: center; z-index: 100; background: rgba(0,0,0,0.6); padding: 10px 0; }
+    </style>
+</head>
+<body>
+    <div id="info">Initializing Camera...</div>
+    <video id="video-hidden" autoplay playsinline></video>
+    <canvas id="output"></canvas>
+
+    <script>
+        const video = document.getElementById('video-hidden');
+        const canvas = document.getElementById('output');
+        const ctx = canvas.getContext('2d');
+        const info = document.getElementById('info');
+
+        let calibrationPoints = [];
+        let isCalibrated = false;
+        let gazeHistory = []; 
+        const targets = [[100,100], [window.innerWidth-100, 100], [window.innerWidth/2, window.innerHeight/2], [100, window.innerHeight-100], [window.innerWidth-100, window.innerHeight-100]];
+        let currentTarget = 0;
+
+        async function setupCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+            return new Promise(resolve => video.onloadedmetadata = () => resolve(video));
+        }
+
+        const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+        faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+
+        faceMesh.onResults(results => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                const x = (landmarks[468].x + landmarks[473].x) / 2;
+                const y = (landmarks[468].y + landmarks[473].y) / 2;
+
+                const screenX = x * canvas.width;
+                const screenY = y * canvas.height;
+
+                if (!isCalibrated) {
+                    info.innerText = `Look at the GREEN dot and press 'C' (${currentTarget+1}/5)`;
+                    ctx.fillStyle = 'lime';
+                    ctx.beginPath();
+                    ctx.arc(targets[currentTarget][0], targets[currentTarget][1], 20, 0, 2*Math.PI);
+                    ctx.fill();
+
+                    window.onkeydown = (e) => {
+                        if (e.key.toLowerCase() === 'c') {
+                            calibrationPoints.push({iris: [x, y], target: targets[currentTarget]});
+                            currentTarget++;
+                            if (currentTarget >= targets.length) isCalibrated = true;
+                        }
+                    };
+                } else {
+                    info.innerHTML = "<b>Thermal Tracking Live!</b> Yellow/Red hotspots indicate high fixational density. (Press 'Q' to reset)";
+                    
+                    // 1. Store the point
+                    gazeHistory.push({x: screenX, y: screenY});
+                    if (gazeHistory.length > 500) gazeHistory.shift();
+
+                    // 2. Draw Thermal Heatmap
+                    ctx.globalCompositeOperation = 'screen'; 
+                    gazeHistory.forEach((point, index) => {
+                        // Newer points are larger and "hotter"
+                        let ageRatio = index / gazeHistory.length; 
+                        let radius = 15 + (ageRatio * 25); 
+                        
+                        let grad = ctx.createRadialGradient(point.x, point.y, 0, point.x, point.y, radius);
+                        
+                        // Thermal Color Ramp: Blue (edge) -> Yellow -> Red (center)
+                        // This creates a multi-color overlapping effect
+                        grad.addColorStop(0, `rgba(255, ${Math.floor(150 * ageRatio)}, 0, 0.15)`); 
+                        grad.addColorStop(0.6, `rgba(255, 255, 0, 0.05)`);
+                        grad.addColorStop(1, `rgba(0, 0, 255, 0)`);
+
+                        ctx.fillStyle = grad;
+                        ctx.beginPath();
+                        ctx.arc(point.x, point.y, radius, 0, 2 * Math.PI);
+                        ctx.fill();
+                    });
+                    ctx.globalCompositeOperation = 'source-over';
+
+                    // 3. Draw Real-time Gaze Pointer
+                    ctx.strokeStyle = 'white';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.arc(screenX, screenY, 8, 0, 2*Math.PI);
+                    ctx.stroke();
+                }
+            }
+        });
+
+        async function main() {
+            await setupCamera();
+            const camera = new Camera(video, { onFrame: async () => { await faceMesh.send({image: video}); }, width: 1280, height: 720 });
+            camera.start();
+        }
+
+        main().catch(err => {
+            info.innerText = "Error: Camera Access Denied.";
+            console.error(err);
+        });
+
+        // Add 'Q' to Reset for easy demoing
+        window.addEventListener("keydown", (e) => {
+            if (e.key.toLowerCase() === 'q') {
+                isCalibrated = false;
+                currentTarget = 0;
+                calibrationPoints = [];
+                gazeHistory = [];
+            }
+        });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+</body>
+</html>
